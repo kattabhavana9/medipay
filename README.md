@@ -1,0 +1,1 @@
+medipay-ai-prescription
