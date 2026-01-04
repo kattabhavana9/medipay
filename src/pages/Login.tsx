@@ -88,6 +88,12 @@ export default function Login() {
               {loading ? 'Signing in...' : 'Sign In'}
             </button>
           </form>
+          <p className="text-sm mt-4 text-center">
+  <a href="/forgot-password" className="text-blue-600 hover:underline">
+    Forgot password?
+  </a>
+</p>
+
 
           <p className="mt-6 text-center text-gray-600">
             Don't have an account?{' '}

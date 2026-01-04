@@ -7,6 +7,8 @@ import CostPrediction from './pages/CostPrediction';
 import PaymentPlan from './pages/PaymentPlan';
 import Alerts from './pages/Alerts';
 import ProtectedRoute from './components/ProtectedRoute';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 
 function App() {
   return (
@@ -45,6 +47,8 @@ function App() {
           </ProtectedRoute>
         }
       />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+<Route path="/reset-password" element={<ResetPassword />} />
       <Route
         path="/alerts"
         element={
