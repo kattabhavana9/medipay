@@ -28,6 +28,7 @@ export interface Prescription {
   monthly_cost: number;
   start_date: string;
   is_active: boolean;
+  quantity: number;
   created_at: string;
   updated_at: string;
 }

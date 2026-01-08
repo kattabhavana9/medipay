@@ -112,11 +112,12 @@ const progressPercentage = activePaymentPlan && totalEMIs > 0
 
     try {
       if (activePaymentPlan) {
-        await supabase
-          .from('payment_plans')
-          .update({ is_active: false })
-          .eq('id', activePaymentPlan.id);
-      }
+  await supabase
+    .from('payment_plans')
+    .update({ is_active: false })
+    .eq('id', activePaymentPlan.id);
+}
+
 
       const totalAmount = Number(latestPrediction.annual_predicted_cost);
       const monthlyEMI = generateEMI(totalAmount, tenureMonths);
@@ -155,7 +156,7 @@ setActivePaymentPlan(data[0]);
       }
     } catch (error) {
       console.error('Error creating payment plan:', error);
-      alert('Failed to create payment plan');
+      
     } finally {
       setLoading(false);
     }

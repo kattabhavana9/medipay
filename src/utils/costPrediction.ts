@@ -14,9 +14,6 @@ export function predictAnnualCost(prescriptions: Prescription[]): {
 } {
   const currentMonthlyCost = calculateCurrentMonthlyCost(prescriptions);
 
-  const growthFactor = 1.05;
-  const seasonalFactors = [1.0, 1.0, 1.1, 1.05, 1.0, 1.0, 1.0, 1.05, 1.1, 1.15, 1.2, 1.15];
-
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
@@ -29,10 +26,9 @@ export function predictAnnualCost(prescriptions: Prescription[]): {
 
   for (let i = 0; i < 12; i++) {
     const monthIndex = (currentMonth + i) % 12;
-    const monthGrowth = Math.pow(growthFactor, i / 12);
-    const seasonalAdjustment = seasonalFactors[monthIndex];
 
-    const monthlyCost = currentMonthlyCost * monthGrowth * seasonalAdjustment;
+    // ✅ CONSTANT COST (no increase)
+    const monthlyCost = currentMonthlyCost;
 
     monthlyBreakdown.push({
       month: monthNames[monthIndex],
@@ -47,6 +43,29 @@ export function predictAnnualCost(prescriptions: Prescription[]): {
     monthlyBreakdown,
   };
 }
+
+export function predictMonthlyCostTrend(
+  prescriptions: Prescription[]
+) {
+  const baseCost = calculateCurrentMonthlyCost(prescriptions);
+
+  const months = [
+    'Jan','Feb','Mar','Apr','May','Jun',
+    'Jul','Aug','Sep','Oct','Nov','Dec'
+  ];
+
+  const prediction = months.map((m, i) => {
+    // 0.5% increase per month (very realistic)
+    const factor = 1 + i * 0.005;
+    return {
+      month: m,
+      cost: Math.round(baseCost * factor)
+    };
+  });
+
+  return prediction;
+}
+
 
 export function generateEMI(totalAmount: number, tenureMonths: number = 12): number {
   return Math.round((totalAmount / tenureMonths) * 100) / 100;

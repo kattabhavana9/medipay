@@ -1,412 +1,337 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase, Prescription } from '../lib/supabase';
-import { checkCostThreshold, calculateCurrentMonthlyCost } from '../utils/costPrediction';
+import { supabase } from '../lib/supabase';
+import { calculateCurrentMonthlyCost } from '../utils/costPrediction';
 import Layout from '../components/Layout';
-import { Plus, Trash2, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
+import { Prescription } from '../lib/supabase';
+import Tesseract from 'tesseract.js';
+import {
+  adjustPaymentPlanOnPrescriptionChange
+} from '../services/emiService';
+
+
+
+
+
+
+/* ---------------- CONFIG ---------------- */
+
+const MEDICINE_KEYWORDS = [
+  // Diabetes
+  'metformin',
+  'glimepiride',
+  'gliclazide',
+  'sitagliptin',
+  'vildagliptin',
+  'empagliflozin',
+  'insulin',
+
+  // Hypertension
+  'amlodipine',
+  'telmisartan',
+  'losartan',
+  'ramipril',
+  'bisoprolol',
+  'nebivolol',
+  'hydrochlorothiazide',
+
+  // Cholesterol / Cardiac
+  'atorvastatin',
+  'rosuvastatin',
+  'fenofibrate',
+  'aspirin',
+  'clopidogrel',
+
+  // Thyroid
+  'levothyroxine',
+
+  // Gastric
+  'pantoprazole',
+  'esomeprazole',
+
+  // Bone / Deficiency
+  'vitamin d',
+  'cholecalciferol',
+  'calcium',
+
+  // Respiratory
+  'montelukast',
+  'budesonide',
+  'salbutamol',
+  'tiotropium',
+
+  // Neurology / Mental health
+  'levetiracetam',
+  'gabapentin',
+  'sertraline',
+
+  // Others
+  'allopurinol',
+  'tamsulosin',
+  'finasteride',
+
+  // General
+  'paracetamol',
+  'azithromycin',
+  'antibiotic',
+  'cough syrup'
+];
+
+
+const BLOCK_WORDS = [
+  'gst', 'invoice', 'tax', 'total', 'amount', 'bank',
+  'ifsc', 'customer', 'address', 'date', 'signature'
+];
+
+/* ---------------- HELPERS ---------------- */
+
+function normalize(text: string) {
+  return text.toLowerCase().replace(/[^a-z0-9 ]/gi, ' ').trim();
+}
+
+function extractDosage(line: string) {
+  return line.match(/\d+\s?(mg|ml|g)/i)?.[0] || 'As prescribed';
+}
+
+/* ---------------- COMPONENT ---------------- */
 
 export default function Prescriptions() {
   const { user } = useAuth();
+
   const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [costWarning, setCostWarning] = useState<{
-    isHigh: boolean;
-    message: string;
-    severity: 'info' | 'warning' | 'error';
-  } | null>(null);
+  const totalMonthlyCost = calculateCurrentMonthlyCost(prescriptions);
+  const [detectedMedicines, setDetectedMedicines] = useState<{
+    name: string;
+    dosage: string;
+    quantity: number;
+    monthly_cost: number;
+    disease_type: string;
+    selected: boolean;
+  }[]>([]);
 
-  const [formData, setFormData] = useState({
-    medicine_name: '',
-    dosage: '',
-    frequency: '',
-    disease_type: '',
-    monthly_cost: '',
-  });
+  /* ---------------- LOAD ---------------- */
 
   useEffect(() => {
-    if (user) {
-      loadPrescriptions();
-    }
+    if (user) loadPrescriptions();
   }, [user]);
 
   async function loadPrescriptions() {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return;
+    const { data } = await supabase
+      .from('prescriptions')
+      .select('*')
+      .eq('user_id', user!.id)
+      .order('created_at', { ascending: false });
 
-  const { data, error } = await supabase
-    .from('prescriptions')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('Error loading prescriptions:', error);
-  } else {
     setPrescriptions(data || []);
   }
-}
 
+  /* ---------------- OCR ---------------- */
 
-  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-
-    if (name === 'monthly_cost' && value) {
-      const newCost = parseFloat(value);
-      const currentTotal = calculateCurrentMonthlyCost(prescriptions);
-      const projectedTotal = currentTotal + newCost;
-      const warning = checkCostThreshold(projectedTotal);
-      setCostWarning(warning);
-    }
+  async function extractText(file: File) {
+    const result = await Tesseract.recognize(file, 'eng');
+    return result.data.text;
   }
+
+  /* ---------------- OCR → MEDICINES ---------------- */
+
+  async function detectMedicinesFromText(text: string) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const found: any[] = [];
+
+    for (const line of lines) {
+      const clean = normalize(line);
+      if (BLOCK_WORDS.some(w => clean.includes(w))) continue;
+
+      for (const keyword of MEDICINE_KEYWORDS) {
+        if (clean.includes(keyword)) {
+          const dosage = extractDosage(line);
+
+          const { data } = await supabase
+            .from('medicine_prices')
+            .select('monthly_cost, disease_type')
+            .ilike('medicine_name', `%${keyword}%`)
+            .maybeSingle();
+
+          if (!data) continue;
+
+          found.push({
+            name: keyword,
+            dosage,
+            quantity: 1,
+            monthly_cost: data.monthly_cost,
+            disease_type: data.disease_type,
+            selected: false,
+          });
+        }
+      }
+    }
+
+    // remove duplicates
+    const unique = Array.from(
+      new Map(found.map(m => [m.name, m])).values()
+    );
+
+    setDetectedMedicines(unique);
+  }
+
+  /* ---------------- SUBMIT ---------------- */
 
   async function handleSubmit(e: React.FormEvent) {
   e.preventDefault();
   setLoading(true);
 
   try {
-    // ✅ ALWAYS get real Supabase auth user
-    const { data: { user }, error: authError } =
-      await supabase.auth.getUser();
-
-    if (authError || !user) {
-      alert("You are not logged in");
+    const selected = detectedMedicines.filter(m => m.selected);
+    if (!selected.length) {
+      alert('Select at least one medicine');
       return;
     }
 
-    // 1️⃣ Insert prescription
-    const { data, error } = await supabase
-      .from('prescriptions')
-      .insert({
-        user_id: user.id,
-        medicine_name: formData.medicine_name,
-        dosage: formData.dosage,
-        frequency: formData.frequency,
-        disease_type: formData.disease_type,
-        monthly_cost: Number(formData.monthly_cost),
-      })
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    // 🔴 2️⃣ IMPORTANT: Invalidate active payment plan
-    await supabase
-      .from('payment_plans')
-      .update({ is_active: false })
-      .eq('user_id', user.id)
-      .eq('is_active', true);
-
-    // 🔔 3️⃣ Alert for plan reset
-    await supabase.from('alerts').insert({
-      user_id: user.id,
-      alert_type: 'plan_invalidated',
-      title: 'Payment Plan Reset',
-      message: 'Your payment plan was reset due to prescription changes.',
-      severity: 'info',
-    });
-
-    // 4️⃣ Existing high-cost alert (unchanged)
-    if (costWarning?.isHigh) {
-      await supabase.from('alerts').insert({
-        user_id: user.id,
-        alert_type: 'high_cost',
-        title: 'High Cost Alert',
-        message: costWarning.message,
-        severity: costWarning.severity,
+    // 1️⃣ Insert medicines
+    for (const med of selected) {
+      await supabase.from('prescriptions').insert({
+        user_id: user!.id,
+        medicine_name: med.name,
+        dosage: med.dosage,
+        frequency: 'As prescribed',
+        disease_type: med.disease_type,
+        quantity: med.quantity,
+        monthly_cost: med.monthly_cost * med.quantity,
       });
     }
 
-    // 5️⃣ UI updates
-    setPrescriptions([data, ...prescriptions]);
-    setShowForm(false);
-    setCostWarning(null);
-    setFormData({
-      medicine_name: '',
-      dosage: '',
-      frequency: '',
-      disease_type: '',
-      monthly_cost: '',
-    });
+    // 2️⃣ Reload prescriptions
+    await loadPrescriptions();
 
-  } catch (err: any) {
-    console.error("Insert failed:", err);
-    alert(err.message || "Failed to add prescription");
+    // 3️⃣ Adjust EXISTING payment plan
+    await adjustPaymentPlanOnPrescriptionChange(user!.id);
+
+    // 4️⃣ Reset UI
+    setDetectedMedicines([]);
+    setShowForm(false);
+
+  } catch (err) {
+    console.error(err);
+    alert('Failed to add prescriptions');
   } finally {
     setLoading(false);
   }
 }
+async function deletePrescription(id: string) {
+  await supabase.from('prescriptions').delete().eq('id', id);
 
+  await loadPrescriptions();
 
-
-  async function handleDelete(id: string) {
-  if (!confirm('Are you sure you want to delete this prescription?')) return;
-
-  try {
-    // 1️⃣ Get authenticated user
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    // 2️⃣ Delete prescription
-    const { error } = await supabase
-      .from('prescriptions')
-      .delete()
-      .eq('id', id);
-
-    if (error) {
-      console.error('Error deleting prescription:', error);
-      alert('Failed to delete prescription');
-      return;
-    }
-
-    // 🔴 3️⃣ Invalidate active payment plan
-    await supabase
-      .from('payment_plans')
-      .update({ is_active: false })
-      .eq('user_id', user.id)
-      .eq('is_active', true);
-
-    // 🔔 4️⃣ Insert alert
-    await supabase.from('alerts').insert({
-      user_id: user.id,
-      alert_type: 'plan_invalidated',
-      title: 'Payment Plan Reset',
-      message: 'Your payment plan was reset due to prescription deletion.',
-      severity: 'info',
-    });
-
-    // 5️⃣ Update UI
-    setPrescriptions(prescriptions.filter((p) => p.id !== id));
-
-  } catch (err) {
-    console.error(err);
-    alert('Something went wrong while deleting prescription');
-  }
+  await adjustPaymentPlanOnPrescriptionChange(user!.id);
 }
 
 
-  const totalMonthlyCost = calculateCurrentMonthlyCost(prescriptions);
 
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Prescriptions</h1>
-            <p className="text-gray-600 mt-1">Manage your prescription medications</p>
-          </div>
+
+        <div className="flex justify-between">
+          <h1 className="text-3xl font-bold">Prescriptions</h1>
           <button
             onClick={() => setShowForm(!showForm)}
-            className="flex items-center space-x-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
+            className="bg-blue-600 text-white px-4 py-2 rounded"
           >
-            <Plus className="w-5 h-5" />
-            <span>Add Prescription</span>
+            <Plus /> Add
           </button>
         </div>
 
         {showForm && (
-          <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-            <h2 className="text-xl font-semibold text-gray-900 mb-6">New Prescription</h2>
+          <form onSubmit={handleSubmit} className="bg-white p-4 rounded space-y-4">
 
-            {costWarning && (
-              <div
-                className={`p-4 rounded-lg border mb-6 ${
-                  costWarning.severity === 'error'
-                    ? 'bg-red-50 border-red-200'
-                    : costWarning.severity === 'warning'
-                    ? 'bg-orange-50 border-orange-200'
-                    : 'bg-blue-50 border-blue-200'
-                }`}
-              >
-                <div className="flex items-start space-x-3">
-                  {costWarning.isHigh ? (
-                    <AlertTriangle className="w-5 h-5 text-orange-600 mt-0.5" />
-                  ) : (
-                    <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
-                  )}
-                  <div>
-                    <p className="font-medium text-gray-900">Real-Time Cost Check</p>
-                    <p className="text-sm text-gray-600 mt-1">{costWarning.message}</p>
-                  </div>
-                </div>
-              </div>
-            )}
+            <input
+              type="file"
+              accept="image/*"
+              onChange={async e => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const text = await extractText(file);
+                await detectMedicinesFromText(text);
+              }}
+            />
 
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Medicine Name
-                  </label>
+            {detectedMedicines.map((med, i) => (
+              <div key={i} className="border p-3 rounded space-y-2">
+                <label className="flex gap-2 items-center">
                   <input
-                    type="text"
-                    name="medicine_name"
-                    value={formData.medicine_name}
-                    onChange={handleInputChange}
-                    required
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., Metformin"
+                    type="checkbox"
+                    checked={med.selected}
+                    onChange={() =>
+                      setDetectedMedicines(prev =>
+                        prev.map((m, idx) =>
+                          idx === i ? { ...m, selected: !m.selected } : m
+                        )
+                      )
+                    }
                   />
-                </div>
+                  <strong>{med.name}</strong> ({med.dosage})
+                </label>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Dosage
-                  </label>
-                  <input
-                    type="text"
-                    name="dosage"
-                    value={formData.dosage}
-                    onChange={handleInputChange}
-                    required
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., 500mg"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Frequency
-                  </label>
-                  <input
-                    type="text"
-                    name="frequency"
-                    value={formData.frequency}
-                    onChange={handleInputChange}
-                    required
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., Twice daily"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Disease Type
-                  </label>
-                  <input
-                    type="text"
-                    name="disease_type"
-                    value={formData.disease_type}
-                    onChange={handleInputChange}
-                    required
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., Type 2 Diabetes"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Monthly Cost (₹)
-                  </label>
+                  Qty:
                   <input
                     type="number"
-                    name="monthly_cost"
-                    value={formData.monthly_cost}
-                    onChange={handleInputChange}
-                    required
-                    step="0.01"
-                    min="0"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., 45.00"
+                    min={1}
+                    value={med.quantity}
+                    onChange={e =>
+                      setDetectedMedicines(prev =>
+                        prev.map((m, idx) =>
+                          idx === i ? { ...m, quantity: +e.target.value } : m
+                        )
+                      )
+                    }
+                    className="ml-2 w-20 border"
                   />
                 </div>
-              </div>
 
-              <div className="flex justify-end space-x-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowForm(false);
-                    setCostWarning(null);
-                    setFormData({
-                      medicine_name: '',
-                      dosage: '',
-                      frequency: '',
-                      disease_type: '',
-                      monthly_cost: '',
-                    });
-                  }}
-                  className="px-6 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {loading ? 'Adding...' : 'Add Prescription'}
-                </button>
+                <p className="text-sm">
+                  ₹{med.monthly_cost} × {med.quantity} = ₹
+                  {med.monthly_cost * med.quantity}
+                </p>
               </div>
-            </form>
-          </div>
+            ))}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="bg-blue-600 text-white px-6 py-2 rounded"
+            >
+              {loading ? 'Adding...' : 'Add Prescription'}
+            </button>
+          </form>
         )}
 
-        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-semibold text-gray-900">Your Prescriptions</h2>
-            <div className="text-right">
-              <p className="text-sm text-gray-600">Total Monthly Cost</p>
-              <p className="text-2xl font-bold text-gray-900">₹{totalMonthlyCost.toFixed(2)}</p>
-            </div>
-          </div>
+        <div className="bg-white p-4 rounded">
+  <p className="font-bold">
+    Total Monthly Cost: ₹{totalMonthlyCost.toFixed(2)}
+  </p>
 
-          {prescriptions.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-gray-500">No prescriptions added yet</p>
-              <button
-                onClick={() => setShowForm(true)}
-                className="mt-4 text-blue-600 font-medium hover:underline"
-              >
-                Add your first prescription
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {prescriptions.map((prescription) => (
-                <div
-                  key={prescription.id}
-                  className="border border-gray-200 rounded-lg p-4 hover:border-blue-300 transition-colors"
-                >
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-gray-900">
-                        {prescription.medicine_name}
-                      </h3>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3">
-                        <div>
-                          <p className="text-xs text-gray-500">Dosage</p>
-                          <p className="text-sm text-gray-900">{prescription.dosage}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500">Frequency</p>
-                          <p className="text-sm text-gray-900">{prescription.frequency}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500">Disease Type</p>
-                          <p className="text-sm text-gray-900">{prescription.disease_type}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500">Monthly Cost</p>
-                          <p className="text-sm font-bold text-gray-900">
-                            ₹{Number(prescription.monthly_cost).toFixed(2)}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleDelete(prescription.id)}
-                      className="ml-4 p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+  {prescriptions.map(p => (
+    <div key={p.id} className="flex justify-between border-b py-2">
+      <div>
+        <p className="font-semibold">{p.medicine_name}</p>
+        <p className="text-sm">{p.dosage}</p>
+      </div>
+
+      <button
+        onClick={() => deletePrescription(p.id)}
+        className="text-red-600 hover:text-red-800"
+      >
+        <Trash2 />
+      </button>
+    </div>
+  ))}
+</div>
+
+
       </div>
     </Layout>
   );

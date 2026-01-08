@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Prescription, CostPrediction } from '../lib/supabase';
 import { predictAnnualCost } from '../utils/costPrediction';
+
+import { predictMonthlyCostTrend } from '../utils/costPrediction';
 import Layout from '../components/Layout';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { TrendingUp, Calendar, DollarSign, Activity } from 'lucide-react';
@@ -12,6 +14,7 @@ export default function CostPredictionPage() {
   const [predictions, setPredictions] = useState<CostPrediction[]>([]);
   const [latestPrediction, setLatestPrediction] = useState<CostPrediction | null>(null);
   const [loading, setLoading] = useState(false);
+  const graphData = predictMonthlyCostTrend(prescriptions);
 
   useEffect(() => {
     if (user) {
@@ -76,15 +79,15 @@ export default function CostPredictionPage() {
     setLatestPrediction(data);
     setPredictions([data, ...predictions]);
 
-    // 🔴 DEACTIVATE OLD PAYMENT PLAN
-    await supabase
-      .from('payment_plans')
-      .update({
-        is_active: false,
-        auto_pay_enabled: false,
-      })
-      .eq('user_id', user!.id)
-      .eq('is_active', true);
+    // // 🔴 DEACTIVATE OLD PAYMENT PLAN
+    // await supabase
+    //   .from('payment_plans')
+    //   .update({
+    //     is_active: false,
+    //     auto_pay_enabled: false,
+    //   })
+    //   .eq('user_id', user!.id)
+    //   .eq('is_active', true);
 
     // 🔔 ALERT
     await supabase.from('alerts').insert({
@@ -155,6 +158,7 @@ export default function CostPredictionPage() {
                   </div>
                 </div>
               </div>
+              
 
               <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
                 <div className="flex items-center justify-between">
@@ -204,6 +208,33 @@ export default function CostPredictionPage() {
                 </LineChart>
               </ResponsiveContainer>
             </div>
+            <div className="bg-white p-6 rounded shadow">
+        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <TrendingUp className="w-5 h-5 text-blue-600" />
+          Predicted Monthly Cost Trend (Informational)
+        </h2>
+
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={graphData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="month" />
+            <YAxis />
+            <Tooltip />
+            <Line
+              type="monotone"
+              dataKey="cost"
+              stroke="#2563eb"
+              strokeWidth={2}
+              dot={{ r: 3 }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+
+        <p className="text-xs text-gray-500 mt-3">
+          This is an estimated trend for awareness only.
+          It does not affect your EMI or payment plan.
+        </p>
+      </div>
 
             <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
               <h2 className="text-xl font-semibold text-gray-900 mb-6">
